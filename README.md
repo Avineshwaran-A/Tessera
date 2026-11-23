@@ -5,13 +5,15 @@ Tessera is a desktop visual workspace for nested boards: notes, checklists, imag
 
 ## Download
 
-Grab the latest build from **[Releases](https://github.com/Avineshwaran-A/Tessera/releases/latest)**.
+**[⬇ Windows (64-bit)](https://github.com/Avineshwaran-A/Tessera/releases/latest/download/Tessera-0.1.0-windows-x64.zip)** · **[⬇ Linux AppImage](https://github.com/Avineshwaran-A/Tessera/releases/latest/download/Tessera-0.1.0-linux-x86_64.AppImage)** · **[⬇ Linux .tar.gz](https://github.com/Avineshwaran-A/Tessera/releases/latest/download/Tessera-0.1.0-linux-x64.tar.gz)**
 
-| Platform | File | How to run |
+The links download the file directly. All versions and checksums are on the **[Releases page](https://github.com/Avineshwaran-A/Tessera/releases/latest)**.
+
+| Platform | Download | How to run |
 |---|---|---|
-| **Windows** (64-bit) | `Tessera-0.1.0-windows-x64.zip` | Unzip the whole folder and run `Tessera.exe`. Windows SmartScreen may warn about an unsigned app: choose **More info → Run anyway**. |
-| **Linux** (AppImage) | `Tessera-0.1.0-linux-x86_64.AppImage` | `chmod +x Tessera-*.AppImage` then run it. Works on most distros. If it won't start, install `libfuse2`. |
-| **Linux** (archive) | `Tessera-0.1.0-linux-x64.tar.gz` | Extract it and run `./tessera` inside the folder. |
+| **Windows 10/11** (64-bit) | [Tessera-0.1.0-windows-x64.zip](https://github.com/Avineshwaran-A/Tessera/releases/latest/download/Tessera-0.1.0-windows-x64.zip) (121 MB) | Unzip the whole folder and run `Tessera.exe`. SmartScreen may warn about an unsigned app: choose **More info → Run anyway**. |
+| **Linux** (AppImage) | [Tessera-0.1.0-linux-x86_64.AppImage](https://github.com/Avineshwaran-A/Tessera/releases/latest/download/Tessera-0.1.0-linux-x86_64.AppImage) (118 MB) | `chmod +x Tessera-*.AppImage`, then run it. Works on most distros. If it won't start, install `libfuse2`. |
+| **Linux** (archive) | [Tessera-0.1.0-linux-x64.tar.gz](https://github.com/Avineshwaran-A/Tessera/releases/latest/download/Tessera-0.1.0-linux-x64.tar.gz) (112 MB) | Extract it and run `./tessera` inside the folder. |
 
 Your boards save automatically to `%APPDATA%\Tessera` on Windows and `~/.config/Tessera` on Linux.
 
