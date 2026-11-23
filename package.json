@@ -1,0 +1,105 @@
+{
+  "name": "tessera",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "desktop:dev": "concurrently -k -n vite,app \"vite --port 5179 --strictPort\" \"wait-on tcp:5179 && TESSERA_DEV_URL=http://localhost:5179 electron .\"",
+    "desktop": "vite build && electron .",
+    "dist": "vite build && electron-builder --linux AppImage",
+    "dist:win": "vite build && electron-builder --win",
+    "dist:mac": "vite build && electron-builder --mac dmg",
+    "dist:deb": "vite build && electron-builder --linux deb",
+    "dist:win-zip": "vite build && electron-builder --win zip --x64 -c.win.artifactName='${productName}-${version}-windows-x64.${ext}'",
+    "dist:linux-tar": "vite build && electron-builder --linux tar.gz --x64 -c.linux.artifactName='${productName}-${version}-linux-x64.${ext}'"
+  },
+  "dependencies": {
+    "@fontsource/fraunces": "^5.1.0",
+    "@fontsource/inter": "^5.1.0",
+    "@fontsource/jetbrains-mono": "^5.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "resedit": "^2.0.3",
+    "typescript": "5.6.3",
+    "vite": "5.4.11",
+    "wait-on": "^8.0.1"
+  },
+  "description": "Tessera — a visual workspace of nested boards",
+  "author": {
+    "name": "Avineshwaran"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "app.tessera.desktop",
+    "productName": "Tessera",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "linux": {
+      "category": "Office",
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage"
+      ],
+      "synopsis": "Visual workspace of nested boards"
+    },
+    "deb": {
+      "maintainer": "Avineshwaran"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity"
+    },
+    "afterPack": "build/stamp-win-exe.cjs",
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Tessera",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
+  }
+}
