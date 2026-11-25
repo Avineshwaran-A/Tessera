@@ -45,6 +45,15 @@ const P: Record<string, JSX.Element> = {
   keyboard: <><rect x="3.5" y="5.5" width="13" height="9" rx="1.5" /><path d="M6.5 8.5h.01M9 8.5h.01M11.5 8.5h.01M14 8.5h-.5M7 11.5h6" /></>,
   info: <><circle cx="10" cy="10" r="6.5" /><path d="M10 9.2v4M10 6.8h.01" /></>,
   quit: <><path d="M11.5 4.5h-6a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h6" /><path d="M9 10h7.5M13.5 7l3 3-3 3" /></>,
+  'line-curve': <path d="M4.5 15c1.5-6.5 4.5-9.5 11-10.5" />,
+  'line-straight': <path d="M4.5 15.5 15.5 4.5" />,
+  'line-elbow': <path d="M4.5 15.5h5.5V4.5h5.5" />,
+  'arrow-end': <><path d="M4 10h11" /><path d="m12 7 3 3-3 3" /></>,
+  'arrow-both': <><path d="M5 10h10" /><path d="m12 7 3 3-3 3M8 7l-3 3 3 3" /></>,
+  'arrow-none': <path d="M4 10h12" />,
+  reset: <><path d="M5 9.5a5.2 5.2 0 1 1 1.6 4.3" /><path d="M5 5.5v4h4" /></>,
+  axes: <><path d="M4.5 15.5V9.5h6V4.5h5" /><path d="M4.5 4.5v2M4.5 4.5h2" strokeDasharray="1.5 1.5" /></>,
+  'bend-remove': <><path d="M3.5 14c2-5 4-7.5 6.5-7.5S14.5 9 16.5 14" strokeDasharray="2 2" /><circle cx="10" cy="6.5" r="2.2" /><path d="m8.6 5.1 2.8 2.8M11.4 5.1 8.6 7.9" /></>,
   thread: <><circle cx="5.5" cy="14.5" r="1.6" /><circle cx="14.5" cy="5.5" r="1.6" /><path d="M6.8 13.2c1.4-4.6 2.8-6.1 6.4-6.4" /></>,
 };
 

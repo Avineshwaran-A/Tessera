@@ -8,7 +8,17 @@ export interface Block {
   color?: string;
   data: Record<string, any>;
 }
-export interface Thread { id: ID; boardId: ID; from: ID; to: ID; label?: string; }
+export type ThreadStyle = 'curve' | 'straight' | 'elbow';
+export type ThreadArrows = 'end' | 'both' | 'none';
+export interface Thread {
+  id: ID; boardId: ID; from: ID; to: ID; label?: string;
+  /** user-dragged waypoint, as an offset from the midpoint between the two block centres; absent = automatic shape */
+  bend?: { x: number; y: number };
+  /** any number of user waypoints (offsets from the centres' midpoint), in order from `from` to `to`; supersedes `bend` */
+  points?: { x: number; y: number }[];
+  style?: ThreadStyle;   // default 'curve'
+  arrows?: ThreadArrows; // default 'end'
+}
 export interface Workspace {
   version: 1; rootId: ID;
   boards: Record<ID, Board>;

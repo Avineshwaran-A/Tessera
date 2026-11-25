@@ -193,9 +193,23 @@ export function boardMenu(boardId: ID, rename: (id: ID) => void): MenuItem[] {
 
 export function threadMenu(threadId: ID, editLabel: (id: ID) => void): MenuItem[] {
   const t = store.ws.threads[threadId]; if (!t) return [];
+  const set = (patch: Record<string, unknown>) => store.dispatch({ type: 'thread/update', id: t.id, patch: patch as any });
+  const style = t.style ?? 'curve', arrows = t.arrows ?? 'end';
   return [
     { label: t.label ? 'Edit label' : 'Add label', icon: 'edit', run: () => editLabel(threadId) },
-    { label: 'Reverse direction', icon: 'redo', run: () => { store.dispatch({ type: 'thread/delete', id: t.id }, { record: true }); store.dispatch({ type: 'thread/add', thread: { ...t, from: t.to, to: t.from } }, { record: false }); } },
+    { label: 'Line style', icon: 'line-' + style, children: [
+      { label: 'Curved', icon: 'line-curve', kbd: style === 'curve' ? '✓' : undefined, run: () => set({ style: undefined }) },
+      { label: 'Straight', icon: 'line-straight', kbd: style === 'straight' ? '✓' : undefined, run: () => set({ style: 'straight' }) },
+      { label: 'Right angles', icon: 'line-elbow', kbd: style === 'elbow' ? '✓' : undefined, run: () => set({ style: 'elbow' }) },
+    ] },
+    { label: 'Arrowheads', icon: 'arrow-' + arrows, children: [
+      { label: 'At the end', icon: 'arrow-end', kbd: arrows === 'end' ? '✓' : undefined, run: () => set({ arrows: undefined }) },
+      { label: 'At both ends', icon: 'arrow-both', kbd: arrows === 'both' ? '✓' : undefined, run: () => set({ arrows: 'both' }) },
+      { label: 'None', icon: 'arrow-none', kbd: arrows === 'none' ? '✓' : undefined, run: () => set({ arrows: 'none' }) },
+    ] },
+    { label: 'Snap to horizontal / vertical', icon: 'axes', run: () => (window as any).__tesseraSnapAxes?.(t.id) },
+    { label: 'Reverse direction', icon: 'redo', run: () => set({ from: t.to, to: t.from }) },
+    { label: (t.points?.length ?? 0) > 1 ? `Remove all ${t.points!.length} bends` : 'Remove bend', icon: 'reset', disabled: !(t.points?.length || t.bend), run: () => set({ bend: undefined, points: undefined }) },
     { separator: true },
     { label: 'Delete connection', icon: 'trash', danger: true, run: () => { store.dispatch({ type: 'thread/delete', id: threadId }); flashToast('Connection deleted', { label: 'Undo', run: store.undo }); } },
     ...extra('thread', { threadId }),

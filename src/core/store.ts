@@ -14,7 +14,7 @@ export type Action =
   | { type: 'block/reparent'; ids: ID[]; boardId: ID; pos: Record<ID, { x: number; y: number }> }
   | { type: 'block/delete'; ids: ID[] }
   | { type: 'thread/add'; thread: Thread }
-  | { type: 'thread/update'; id: ID; label: string }
+  | { type: 'thread/update'; id: ID; label?: string; patch?: Partial<Omit<Thread, 'id' | 'boardId'>> }
   | { type: 'thread/delete'; id: ID }
   | { type: 'ws/replace'; ws: Workspace };
 
@@ -85,7 +85,13 @@ export function reduce(ws: Workspace, a: Action): Workspace {
     }
     case 'block/delete': return removeBlocks(ws, new Set(a.ids));
     case 'thread/add': return { ...ws, threads: { ...ws.threads, [a.thread.id]: a.thread } };
-    case 'thread/update': return ws.threads[a.id] ? { ...ws, threads: { ...ws.threads, [a.id]: { ...ws.threads[a.id], label: a.label } } } : ws;
+    case 'thread/update': {
+      const t = ws.threads[a.id]; if (!t) return ws;
+      const next: Thread = { ...t, ...(a.label !== undefined ? { label: a.label } : {}), ...(a.patch ?? {}) };
+      // undefined in a patch means "reset to automatic"
+      (Object.keys(a.patch ?? {}) as (keyof Thread)[]).forEach(k => { if ((a.patch as any)[k] === undefined) delete (next as any)[k]; });
+      return { ...ws, threads: { ...ws.threads, [a.id]: next } };
+    }
     case 'thread/delete': { const threads = { ...ws.threads }; delete threads[a.id]; return { ...ws, threads }; }
     case 'ws/replace': return a.ws;
   }

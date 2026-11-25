@@ -4,7 +4,7 @@ import { getBlockDef } from '../core/registry';
 import { captureInto } from '../core/capture';
 import { uid } from '../core/model';
 import type { Block, ID } from '../core/model';
-import { contains, intersects, normRect, threadPath, center } from './geometry';
+import { contains, intersects, normRect, threadPath, threadPoints, insertIndex, alignToAxes, center } from './geometry';
 import { BlockView } from './BlockView';
 import { contextMenu } from '../ui/ContextMenu';
 import { blockMenu, canvasMenu, threadMenu } from '../ui/actions';
@@ -20,7 +20,9 @@ type Drag =
   | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; base: string[] }
   | { kind: 'move'; ids: string[]; primary: string; start: Record<ID, Pt>; p0: Pt; moved: boolean; lastX: number; lastT: number; tilt: number; target: string | null; frame: string | null; board: ID | null; snapped: boolean }
   | { kind: 'resize'; id: string; sx: number; sy: number; w: number; h: number; ratio: number | null; started: boolean }
-  | { kind: 'thread'; from: string; x: number; y: number; over: string | null };
+  | { kind: 'thread'; from: string; x: number; y: number; over: string | null }
+  | { kind: 'bend'; id: ID; index: number; insert: boolean; started: boolean; p0: Pt }
+  | { kind: 'rewire'; id: ID; end: 'from' | 'to'; x: number; y: number; over: string | null };
 
 const IMAGE_CAPTION_H = 34;
 
@@ -35,6 +37,10 @@ export function Canvas() {
   const threads = Object.values(allThreads).filter(t => t.boardId === boardId);
   const [editing, setEditing] = useState<string | null>(null);
   const [selThread, setSelThread] = useState<string | null>(null);
+  /** one picked bend on the selected connection, so it can be deleted on its own */
+  const [selBend, setSelBend] = useState<{ id: ID; index: number } | null>(null);
+  const selBendRef = useRef(selBend); selBendRef.current = selBend;
+  const selThreadRef = useRef(selThread); selThreadRef.current = selThread;
   const [drag, setDrag] = useState<Drag | null>(null);
   const [guides, setGuides] = useState<Guide[]>([]);
   const guidesRef = useRef<Guide[]>([]); guidesRef.current = guides;
@@ -43,8 +49,11 @@ export function Canvas() {
   const [space, setSpace] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null); dragRef.current = drag;
+  /** snap state of the bend being dragged (kept outside React state so every move sees the last one) */
+  const snapRef = useRef<{ x?: number; y?: number; line?: boolean }>({});
 
-  useEffect(() => { setEditing(null); setSelThread(null); setGuides([]); }, [boardId]);
+  useEffect(() => { setEditing(null); setSelThread(null); setSelBend(null); setGuides([]); }, [boardId]);
+  useEffect(() => { if (selBend && selBend.id !== selThread) setSelBend(null); }, [selThread]); // eslint-disable-line
 
   const toWorld = useCallback((cx: number, cy: number) => {
     const r = ref.current!.getBoundingClientRect(); const v = getView();
@@ -57,6 +66,7 @@ export function Canvas() {
     const w = window as any;
     w.__tesseraCenter = () => { const r = ref.current!.getBoundingClientRect(); return toWorld(r.left + r.width / 2, r.top + r.height / 2); };
     w.__tesseraEdit = (id: string) => setEditing(id);
+    w.__tesseraSnapAxes = (id: ID) => snapThreadToAxes(id);
     w.__tesseraFit = () => {
       const bs = Object.values(store.ws.blocks).filter(b => b.boardId === store.ui.boardId); const r = ref.current!.getBoundingClientRect();
       if (!bs.length) return animateView(DEFAULT_VIEW);
@@ -73,7 +83,13 @@ export function Canvas() {
 
   // keyboard: space for panning, escape to leave edit
   useEffect(() => {
-    const dn = (e: KeyboardEvent) => { if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && !isTyping()) { e.preventDefault(); openMenuForSelection(); return; } if (e.code === 'Space' && !isTyping()) { setSpace(true); e.preventDefault(); } if (e.key === 'Escape') { setEditing(null); setSelThread(null); (document.activeElement as HTMLElement)?.blur?.(); } };
+    const dn = (e: KeyboardEvent) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !isTyping() && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const sb = selBendRef.current, st = selThreadRef.current;
+        if (sb && store.ws.threads[sb.id]) { e.preventDefault(); e.stopImmediatePropagation(); removeBend(sb.id, sb.index); return; }
+        if (st && store.ws.threads[st] && !store.ui.selection.length) { e.preventDefault(); e.stopImmediatePropagation(); store.dispatch({ type: 'thread/delete', id: st }); setSelThread(null); flashToast('Connection deleted', { label: 'Undo', run: store.undo }); return; }
+      }
+      if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && !isTyping()) { e.preventDefault(); openMenuForSelection(); return; } if (e.code === 'Space' && !isTyping()) { setSpace(true); e.preventDefault(); } if (e.key === 'Escape') { setEditing(null); setSelThread(null); (document.activeElement as HTMLElement)?.blur?.(); } };
     const up = (e: KeyboardEvent) => { if (e.code === 'Space') setSpace(false); };
     window.addEventListener('keydown', dn); window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', dn); window.removeEventListener('keyup', up); };
@@ -107,6 +123,12 @@ export function Canvas() {
   }, []);
 
   // global pointer move/up while dragging (layout effect: attached before the next pointer event)
+  useEffect(() => {
+    if (!drag || drag.kind === 'pan') return;
+    document.body.classList.add('no-select'); getSelection()?.removeAllRanges();
+    return () => document.body.classList.remove('no-select');
+  }, [drag !== null]); // eslint-disable-line
+
   useLayoutEffect(() => {
     if (!drag) return;
     const move = (e: PointerEvent) => {
@@ -160,6 +182,56 @@ export function Canvas() {
         if (d.ratio && !e.shiftKey) nh = Math.round(nw * d.ratio) + IMAGE_CAPTION_H;
         store.dispatch({ type: 'block/update', id: d.id, patch: def?.autoHeight ? { w: Math.round(nw) } : { w: Math.round(nw), h: Math.round(nh) } }, { record: false });
         if (!d.started) setDrag({ ...d, started: true });
+      } else if (d.kind === 'bend') {
+        const t = store.ws.threads[d.id]; const a = t && store.ws.blocks[t.from], b = t && store.ws.blocks[t.to];
+        if (!t || !a || !b) return;
+        const k = getView().k;
+        if (!d.started && Math.hypot(w.x - d.p0.x, w.y - d.p0.y) * k < 3) return; // a click just selects the line
+        const ca = center(a), cb = center(b); const mid = { x: (ca.x + cb.x) / 2, y: (ca.y + cb.y) / 2 };
+        let pts = threadPoints(t).map(o => ({ ...o }));
+        let index = d.index;
+        if (!d.started) {
+          store.checkpoint();
+          if (d.insert) {
+            // pressing on the line itself adds a new bend exactly where it was grabbed
+            const g = threadPath(a, b, { type: t.style, points: pts });
+            index = pts.length ? insertIndex(g.route, d.p0) : 0;
+            pts.splice(index, 0, { x: d.p0.x - mid.x, y: d.p0.y - mid.y });
+          } else if (!pts.length) { pts = [{ x: w.x - mid.x, y: w.y - mid.y }]; index = 0; } // first drag of the automatic curve
+          setDrag({ ...d, started: true, index, insert: false });
+        }
+        let x = w.x, y = w.y; const gs: Guide[] = [];
+        let snap: { x?: number; y?: number; line?: boolean } = {};
+        if (!e.altKey) {
+          // neighbours of this bend: the previous/next bend, or the block centre at either end
+          const abs = pts.map(o => ({ x: mid.x + o.x, y: mid.y + o.y }));
+          const prev = index === 0 ? ca : abs[index - 1], next = index === pts.length - 1 ? cb : abs[index + 1];
+          // hysteresis: a snap engages inside 8px but only lets go beyond 14px, so it never flickers at the edge
+          const catchR = 8 / k, releaseR = 14 / k, was = snapRef.current;
+          const pick = (v: number, cands: number[], held?: number) =>
+            held !== undefined && cands.includes(held) && Math.abs(v - held) < releaseR ? held
+              : cands.map(c => ({ c, d: Math.abs(v - c) })).filter(o => o.d < catchR).sort((p, q) => p.d - q.d)[0]?.c;
+          const sx = pick(x, [prev.x, next.x], was.x), sy = pick(y, [prev.y, next.y], was.y);
+          if (sx !== undefined) { x = sx; snap.x = sx; const n = sx === prev.x ? prev : next; gs.push({ axis: 'x', at: x, from: Math.min(y, n.y) - 14 / k, to: Math.max(y, n.y) + 14 / k }); }
+          if (sy !== undefined) { y = sy; snap.y = sy; const n = sy === prev.y ? prev : next; gs.push({ axis: 'y', at: y, from: Math.min(x, n.x) - 14 / k, to: Math.max(x, n.x) + 14 / k }); }
+          if (sx === undefined && sy === undefined) {
+            // otherwise: a bend lying almost on the line between its neighbours straightens out (same hysteresis)
+            const lx = next.x - prev.x, ly = next.y - prev.y, len = Math.hypot(lx, ly) || 1;
+            const perp = ((x - prev.x) * -ly + (y - prev.y) * lx) / len;
+            if (Math.abs(perp) < (was.line ? releaseR : catchR * 0.85)) {
+              const along = ((x - prev.x) * lx + (y - prev.y) * ly) / len; x = prev.x + (lx / len) * along; y = prev.y + (ly / len) * along; snap.line = true;
+            }
+          }
+        }
+        snapRef.current = snap;
+        setGuides(gs);
+        pts[index] = { x: x - mid.x, y: y - mid.y }; // exact: rounding against a half-pixel midpoint would knock snapped legs off-axis
+        store.dispatch({ type: 'thread/update', id: d.id, patch: { points: pts, bend: undefined } }, { record: false });
+      } else if (d.kind === 'rewire') {
+        const t = store.ws.threads[d.id]; const fixed = t ? (d.end === 'from' ? t.to : t.from) : null;
+        const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest('[data-block]') as HTMLElement | null;
+        const over = el && el.dataset.block !== fixed ? el.dataset.block! : null;
+        setDrag({ ...d, x: w.x, y: w.y, over });
       } else if (d.kind === 'thread') {
         const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest('[data-block]') as HTMLElement | null;
         const over = el && el.dataset.block !== d.from ? el.dataset.block! : null;
@@ -171,6 +243,15 @@ export function Canvas() {
       if (d.kind === 'pan') {
         const s = d.samples; const a = s[0], b = s[s.length - 1];
         if (s.length > 1 && performance.now() - b.t < 60) glide((b.x - a.x) / Math.max(1, b.t - a.t), (b.y - a.y) / Math.max(1, b.t - a.t));
+      }
+      if (d.kind === 'rewire' && d.over) {
+        const t = store.ws.threads[d.id];
+        if (t) {
+          const from = d.end === 'from' ? d.over : t.from, to = d.end === 'to' ? d.over : t.to;
+          const dup = Object.values(store.ws.threads).some(o => o.id !== t.id && ((o.from === from && o.to === to) || (o.from === to && o.to === from)));
+          if (dup) flashToast('Those blocks are already connected');
+          else store.dispatch({ type: 'thread/update', id: t.id, patch: { from, to, bend: undefined, points: undefined } });
+        }
       }
       if (d.kind === 'thread') {
         const to = d.over;
@@ -192,6 +273,8 @@ export function Canvas() {
           }
         }
       }
+      if (d.kind === 'bend' && !d.started) setSelBend(d.insert ? null : threadPoints(store.ws.threads[d.id] ?? {}).length ? { id: d.id, index: d.index } : null);
+      if (d.kind === 'bend' && d.started) setSelBend({ id: d.id, index: d.index >= 0 ? d.index : 0 });
       setGuides([]); setDrag(null);
     };
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
@@ -220,6 +303,7 @@ export function Canvas() {
 
   const onBgDown = (e: React.PointerEvent) => {
     if (dragRef.current?.kind === 'thread') return; // click-to-connect: the window pointerup finishes it
+    setSelBend(null);
     if (!isBackground(e)) return;
     stopMotion();
     (document.activeElement as HTMLElement)?.blur?.();
@@ -282,7 +366,19 @@ export function Canvas() {
     e.preventDefault();
     if (dragRef.current) return;
     const th = (t.closest('[data-thread]') as Element | null)?.getAttribute('data-thread');
-    if (th) { setSelThread(null); contextMenu.open(e.clientX, e.clientY, threadMenu(th, id => setSelThread(id))); return; }
+    const bi = (t.closest('[data-bend-index]') as Element | null)?.getAttribute('data-bend-index');
+    if (th && bi != null) {
+      const i = +bi; setSelThread(th); setSelBend({ id: th, index: i });
+      const n = threadPoints(store.ws.threads[th] ?? {}).length;
+      contextMenu.open(e.clientX, e.clientY, [
+        { label: 'Remove this bend', icon: 'trash', kbd: 'Del', danger: true, run: () => { removeBend(th, i); setSelBend(null); } },
+        ...(n > 1 ? [{ label: `Remove all ${n} bends`, icon: 'reset', run: () => { store.dispatch({ type: 'thread/update', id: th, patch: { points: undefined, bend: undefined } }); setSelBend(null); } }] : []),
+        { separator: true },
+        { label: 'Snap line to horizontal / vertical', icon: 'axes', run: () => { snapThreadToAxes(th); setSelBend(null); } },
+      ], `Bend ${i + 1} of ${n}`);
+      return;
+    }
+    if (th) { setSelThread(null); contextMenu.open(e.clientX, e.clientY, threadMenu(th, id => { setSelThread(id); setTimeout(() => document.querySelector<HTMLInputElement>('.thread-pop input')?.focus()); })); return; }
     const bid = (t.closest('[data-block]') as HTMLElement | null)?.dataset.block;
     if (bid) {
       const ids = store.ui.selection.includes(bid) ? store.ui.selection : [bid];
@@ -329,10 +425,18 @@ export function Canvas() {
   const marquee = drag?.kind === 'marquee' ? normRect(drag.x0, drag.y0, drag.x1, drag.y1) : null;
   const threadFrom = drag?.kind === 'thread' ? map[drag.from] : null;
   const st = selThread ? allThreads[selThread] : null;
+  // keep the connection popover inside the canvas (it lives in world space, so shifts are divided by zoom)
+  useLayoutEffect(() => {
+    const el = ref.current?.querySelector<HTMLElement>('.thread-pop'); if (!el || !ref.current) return;
+    el.style.setProperty('--dx', '0px');
+    const r = el.getBoundingClientRect(), c = ref.current.getBoundingClientRect(), pad = 12;
+    const shift = r.right > c.right - pad ? c.right - pad - r.right : r.left < c.left + pad ? c.left + pad - r.left : 0;
+    if (shift) el.style.setProperty('--dx', `${shift / view.k}px`);
+  });
   const moving = drag?.kind === 'move' ? new Set(drag.ids) : null;
   const resizing = drag?.kind === 'resize' ? map[drag.id] : null;
 
-  return <div ref={ref} className={'canvas' + (space ? ' panning' : '') + (drag?.kind === 'pan' ? ' grabbing' : '') + (moving ? ' dragging' : '')}
+  return <div ref={ref} className={'canvas' + (space ? ' panning' : '') + (drag?.kind === 'pan' ? ' grabbing' : '') + (moving ? ' dragging' : '') + (drag?.kind === 'bend' && drag.started ? ' bending' : '')}
     style={{ backgroundPosition: `${view.x}px ${view.y}px, ${view.x}px ${view.y}px`, backgroundSize: `${24 * view.k}px ${24 * view.k}px, ${120 * view.k}px ${120 * view.k}px`, ['--grid-fade' as any]: view.k < 0.45 ? 0 : 1 }}
     onPointerDown={onBgDown} onDoubleClick={onBgDouble} onContextMenu={onContext}
     onDragOver={e => e.preventDefault()}
@@ -341,11 +445,35 @@ export function Canvas() {
       <div className="world" style={{ transform: `translate(${view.x}px,${view.y}px) scale(${view.k})`, ['--tilt' as any]: `${drag?.kind === 'move' ? drag.tilt : 0}deg`, ['--lift' as any]: drag?.kind === 'move' && drag.ids.length > 1 ? 1 : 1.025 }}>
         <svg className="threads" width="1" height="1">
           <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" className="arrowhead" /></marker></defs>
-          {threads.map(t => { const a = map[t.from], b = map[t.to]; if (!a || !b) return null; const p = threadPath(a, b);
-            return <g key={t.id} data-thread={t.id} className={'thread' + (selThread === t.id ? ' sel' : '') + (moving && (moving.has(t.from) || moving.has(t.to)) ? ' live' : '')} onPointerDown={e => { e.stopPropagation(); setSelThread(t.id); store.setUI({ selection: [] }); }}>
-              <path d={p.d} className="hit" /><path d={p.d} className="line" markerEnd="url(#arrow)" />
-              {t.label && <text x={p.mid.x} y={p.mid.y - 6} className="thread-label">{t.label}</text>}
+          {threads.map(t => { const a = map[t.from], b = map[t.to]; if (!a || !b) return null;
+            const g = threadPath(a, b, { type: t.style, points: threadPoints(t) }); const arrows = t.arrows ?? 'end';
+            const sel = selThread === t.id; const rewiring = drag?.kind === 'rewire' && drag.id === t.id;
+            const bending = drag?.kind === 'bend' && drag.id === t.id && drag.started;
+            const hr = 5.5 / view.k, er = 4.5 / view.k;
+            const grab = (e: React.PointerEvent, index: number, insert: boolean) => {
+              if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); // no native text selection while dragging
+              (document.activeElement as HTMLElement | null)?.blur?.(); setSelThread(t.id); store.setUI({ selection: [] });
+              snapRef.current = {};
+              setDrag({ kind: 'bend', id: t.id, index, insert, started: false, p0: toWorld(e.clientX, e.clientY) });
+            };
+            return <g key={t.id} data-thread={t.id} className={'thread' + (sel ? ' sel' : '') + (selBend?.id === t.id ? ' has-pick' : '') + (rewiring ? ' rewiring' : '') + (bending ? ' bending' : '') + (moving && (moving.has(t.from) || moving.has(t.to)) ? ' live' : '')}
+              onPointerDown={e => grab(e, -1, true)}>
+              <path d={g.d} className="hit"><title>Drag the line to bend it here</title></path>
+              <path d={g.d} className="line" markerEnd={arrows !== 'none' ? 'url(#arrow)' : undefined} markerStart={arrows === 'both' ? 'url(#arrow)' : undefined} />
+              {t.label && <text x={g.anchor.x} y={g.anchor.y - 10 / view.k} className="thread-label" style={{ fontSize: 11 / Math.max(view.k, .6) }}>{t.label}</text>}
+              {g.ghost && <circle className="bend-handle auto" cx={g.ghost.x} cy={g.ghost.y} r={hr} onPointerDown={e => grab(e, 0, false)}><title>Drag to bend</title></circle>}
+              {g.points.map((pt, i) => { const picked = selBend?.id === t.id && selBend.index === i;
+                const grabbed = bending && drag?.kind === 'bend' && drag.index === i;
+                return <circle key={i} className={'bend-handle' + (picked ? ' picked' : '') + (grabbed ? ' grabbed' : '')} cx={pt.x} cy={pt.y} r={picked ? hr * 1.25 : hr} data-bend-index={i}
+                  onPointerDown={e => grab(e, i, false)} onDoubleClick={e => { e.stopPropagation(); removeBend(t.id, i); }}>
+                  <title>Drag to move · click then Delete, or double-click, to remove this bend</title></circle>; })}
+              {sel && !rewiring && (['from', 'to'] as const).map(end => { const pt = end === 'from' ? g.start : g.end;
+                return <circle key={end} className="thread-end" cx={pt.x} cy={pt.y} r={er}
+                  onPointerDown={e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); const w = toWorld(e.clientX, e.clientY); setDrag({ kind: 'rewire', id: t.id, end, x: w.x, y: w.y, over: null }); }}>
+                  <title>Drag onto another block to reconnect</title></circle>; })}
             </g>; })}
+          {drag?.kind === 'rewire' && (() => { const t = allThreads[drag.id]; const fixed = t && map[drag.end === 'from' ? t.to : t.from]; if (!fixed) return null;
+            return <line className="thread-temp" x1={fixed.x + fixed.w / 2} y1={fixed.y + fixed.h / 2} x2={drag.x} y2={drag.y} />; })()}
           {threadFrom && drag?.kind === 'thread' && <line className="thread-temp" x1={threadFrom.x + threadFrom.w / 2} y1={threadFrom.y + threadFrom.h / 2} x2={drag.x} y2={drag.y} />}
           {guides.map((g, i) => g.axis === 'x'
             ? <line key={i} className="guide" x1={g.at} x2={g.at} y1={g.from} y2={g.to} />
@@ -355,18 +483,34 @@ export function Canvas() {
           const ab = absorb?.ids.has(b.id);
           return <BlockView key={b.id} block={b} selected={selection.includes(b.id)} editing={editing === b.id}
             state={(moving?.has(b.id) ? ' lifting' : '') + (b.id === (drag?.kind === 'move' ? drag.target : null) ? ' drop-target' : '') + (b.id === (drag?.kind === 'move' ? drag.frame : null) ? ' frame-target' : '')
-              + (drag?.kind === 'thread' && drag.over === b.id ? ' link-target' : '') + (resizing?.id === b.id ? ' resizing' : '') + (ab ? ' absorbing' : '') + (received === b.id ? ' received' : '')}
+              + ((drag?.kind === 'thread' || drag?.kind === 'rewire') && drag.over === b.id ? ' link-target' : '') + (resizing?.id === b.id ? ' resizing' : '') + (ab ? ' absorbing' : '') + (received === b.id ? ' received' : '')}
             absorbTo={ab ? { x: absorb!.to.x - (b.x + b.w / 2), y: absorb!.to.y - (b.y + b.h / 2) } : undefined}
             onPointerDown={e => onBlockDown(e, b)} onDoubleClick={e => onBlockDouble(e, b)} />;
         })}
         {drag?.kind === 'move' && drag.target && map[drag.target] && <div className="drop-chip" style={{ left: map[drag.target].x + map[drag.target].w / 2, top: map[drag.target].y - 10 }}>Move into “{store.ws.boards[map[drag.target].data.boardId]?.title}”</div>}
         {resizing && <div className="size-chip mono" style={{ left: resizing.x + resizing.w, top: resizing.y + resizing.h + 8 }}>{resizing.w} × {resizing.h}</div>}
         {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} />}
-        {st && map[st.from] && map[st.to] && (() => { const p = threadPath(map[st.from], map[st.to]);
-          return <div className="thread-pop" style={{ left: p.mid.x, top: p.mid.y + 8 }} onPointerDown={e => e.stopPropagation()}>
-            <input data-nodrag autoFocus placeholder="Label" defaultValue={st.label ?? ''} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+        {st && map[st.from] && map[st.to] && (() => { const g = threadPath(map[st.from], map[st.to], { type: st.style, points: threadPoints(st) }); const bends = threadPoints(st).length;
+          const setT = (patch: Parameters<typeof threadPatch>[1]) => threadPatch(st.id, patch);
+          const style = st.style ?? 'curve', arrows = st.arrows ?? 'end';
+          // keep the popover on the outside of the bend so it never covers the line
+          const ca = center(map[st.from]), cb = center(map[st.to]);
+          const above = g.anchor.y < (ca.y + cb.y) / 2 - 2;
+          return <div className={'thread-pop' + (above ? ' above' : '') + (drag ? ' hushed' : '')} aria-hidden={drag ? true : undefined} style={{ left: g.anchor.x, top: g.anchor.y, ['--k' as any]: view.k }} onPointerDown={e => e.stopPropagation()}>
+            <input data-nodrag placeholder="Label" defaultValue={st.label ?? ''} key={st.id} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLInputElement).blur(); }}
               onBlur={e => e.target.value !== (st.label ?? '') && store.dispatch({ type: 'thread/update', id: st.id, label: e.target.value })} />
-            <button className="ghost-btn danger" onPointerDown={() => { store.dispatch({ type: 'thread/delete', id: st.id }); setSelThread(null); }}>Delete</button>
+            <span className="tp-sep" />
+            <div className="tp-seg" role="radiogroup" aria-label="Line style">
+              {(['curve', 'straight', 'elbow'] as const).map(v => <button key={v} role="radio" aria-checked={style === v} className={style === v ? 'on' : ''} title={v === 'curve' ? 'Curved' : v === 'straight' ? 'Straight' : 'Right angles'} aria-label={v}
+                onClick={() => setT({ style: v === 'curve' ? undefined : v })}><Icon name={'line-' + v} size={16} /></button>)}
+            </div>
+            <button className="tp-btn" title={arrows === 'end' ? 'Arrow at end' : arrows === 'both' ? 'Arrows at both ends' : 'No arrows'} aria-label="Arrowheads"
+              onClick={() => setT({ arrows: arrows === 'end' ? 'both' : arrows === 'both' ? 'none' : undefined })}><Icon name={'arrow-' + arrows} size={16} /></button>
+            <button className="tp-btn" title="Snap to horizontal / vertical" aria-label="Snap to axes" onClick={() => { snapThreadToAxes(st.id); setSelBend(null); }}><Icon name="axes" size={16} /></button>
+            {selBend?.id === st.id && <button className="tp-btn danger" title="Remove the selected bend (Delete)" aria-label="Remove selected bend" onClick={() => { removeBend(st.id, selBend.index); setSelBend(null); }}><Icon name="bend-remove" size={16} /></button>}
+            {bends > 0 && <button className="tp-btn" title={`Remove ${bends === 1 ? 'the bend' : `all ${bends} bends`}`} aria-label="Reset shape" onClick={() => setT({ bend: undefined, points: undefined })}><Icon name="reset" size={16} /></button>}
+            <span className="tp-sep" />
+            <button className="tp-btn danger" title="Delete connection" aria-label="Delete connection" onClick={() => { store.dispatch({ type: 'thread/delete', id: st.id }); setSelThread(null); flashToast('Connection deleted', { label: 'Undo', run: store.undo }); }}><Icon name="trash" size={16} /></button>
           </div>; })()}
       </div>
     </div>
@@ -387,6 +531,26 @@ export function Canvas() {
       <button onClick={() => (window as any).__tesseraFit()} title="Fit content (Shift 1)" aria-label="Zoom to fit"><Icon name="fit" size={16} /></button>
     </div>
   </div>;
+}
+
+/** Remove one bend from a connection (one undo step). */
+export function removeBend(id: ID, index: number) {
+  const t = store.ws.threads[id]; if (!t) return;
+  const pts = threadPoints(t); if (index < 0 || index >= pts.length) return;
+  const rest = pts.filter((_, j) => j !== index);
+  store.dispatch({ type: 'thread/update', id, patch: { points: rest.length ? rest : undefined, bend: undefined } });
+  flashToast(rest.length ? `Bend removed · ${rest.length} left` : 'Bend removed', { label: 'Undo', run: store.undo });
+}
+/** Square every leg of a connection to the horizontal/vertical axes (one undo step). */
+export function snapThreadToAxes(id: ID) {
+  const t = store.ws.threads[id]; const a = t && store.ws.blocks[t.from], b = t && store.ws.blocks[t.to]; if (!t || !a || !b) return;
+  const pts = alignToAxes(center(a), center(b), threadPoints(t));
+  store.dispatch({ type: 'thread/update', id, patch: { points: pts.length ? pts : undefined, bend: undefined, style: t.style === 'curve' || !t.style ? 'straight' : t.style } });
+}
+
+/** Shape/style change on a connection, as one undo step. */
+export function threadPatch(id: ID, patch: { style?: 'curve' | 'straight' | 'elbow'; arrows?: 'end' | 'both' | 'none'; bend?: { x: number; y: number }; points?: { x: number; y: number }[] }) {
+  store.dispatch({ type: 'thread/update', id, patch });
 }
 
 let zoneEl: HTMLElement | null = null;
